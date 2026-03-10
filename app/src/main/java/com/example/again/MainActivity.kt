@@ -8,6 +8,7 @@ import android.os.Bundle
 import android.provider.Settings
 import android.text.TextUtils
 import android.util.Log
+import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
@@ -27,8 +28,8 @@ class MainActivity : AppCompatActivity() {
         if (result.resultCode == RESULT_OK) {
             Log.d("BLE_AD", "Bluetooth enabled by user. Starting advertising.")
             lastClickedItem?.let {
-                bleManager.startAdvertising(it)
-                lastClickedItem = null // Clear after use
+                processAndAdvertise(it)
+                lastClickedItem = null 
             }
         } else {
             Log.e("BLE_AD", "Bluetooth not enabled by user.")
@@ -38,6 +39,8 @@ class MainActivity : AppCompatActivity() {
     private val receiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
             val data = intent?.getStringExtra("data") ?: return
+            Log.d("MAIN_ACTIVITY", "Received broadcast for app: $data")
+            
             eventList.add(0, data)
             adapter.notifyItemInserted(0)
             binding.recyclerView.scrollToPosition(0)
@@ -47,6 +50,9 @@ class MainActivity : AppCompatActivity() {
                 eventList.removeAt(lastPosition)
                 adapter.notifyItemRemoved(lastPosition)
             }
+
+            // Automatically start advertising when a new app is detected from broadcast
+            processAndAdvertise(data)
         }
     }
 
@@ -61,9 +67,9 @@ class MainActivity : AppCompatActivity() {
         adapter = EventAdapter(eventList) { clickedItem ->
             val bluetoothAdapter = BluetoothAdapter.getDefaultAdapter()
             if (bluetoothAdapter?.isEnabled == true) {
-                bleManager.startAdvertising(clickedItem)
+                processAndAdvertise(clickedItem)
             } else {
-                lastClickedItem = clickedItem // Save the item to advertise later
+                lastClickedItem = clickedItem 
                 val enableBtIntent = Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE)
                 requestEnableBluetooth.launch(enableBtIntent)
             }
@@ -76,10 +82,13 @@ class MainActivity : AppCompatActivity() {
             if (!isAccessibilityServiceEnabled()) {
                 showAccessibilityServiceDialog()
             } else {
-                ContextCompat.startForegroundService(
-                    this,
-                    Intent(this, ForegroundService::class.java)
-                )
+                try {
+                    val serviceIntent = Intent(this, ForegroundService::class.java)
+                    ContextCompat.startForegroundService(this, serviceIntent)
+                    Toast.makeText(this, "Service Started", Toast.LENGTH_SHORT).show()
+                } catch (e: Exception) {
+                    Log.e("MAIN_ACTIVITY", "Error starting ForegroundService: ${e.message}")
+                }
             }
         }
 
@@ -88,6 +97,14 @@ class MainActivity : AppCompatActivity() {
         } else {
             registerReceiver(receiver, IntentFilter("ACTION_USER_EVENT"))
         }
+    }
+
+    private fun processAndAdvertise(appName: String) {
+        Log.d("MAIN_ACTIVITY", "processAndAdvertise: $appName")
+        runOnUiThread {
+            Toast.makeText(this, "Advertising: $appName", Toast.LENGTH_SHORT).show()
+        }
+        bleManager.startAdvertising(appName)
     }
 
     private fun requestPermissions() {
@@ -140,7 +157,11 @@ class MainActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
-        unregisterReceiver(receiver)
-        bleManager.stopAdvertising()
+        try {
+            unregisterReceiver(receiver)
+        } catch (e: Exception) {}
+        // If we want it to keep advertising in background, don't stop here 
+        // unless you move the manager to the ForegroundService.
+        // For now, I'll keep it as is.
     }
 }
