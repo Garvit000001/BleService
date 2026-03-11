@@ -72,18 +72,13 @@ class BleAdvertiserManager(private val context: Context) {
             Log.d("BLE_GATT", "Read request for: ${characteristic.uuid} at offset $offset")
             
             if (characteristic.uuid == CHAR_UUID) {
-                // Ensure we have a value to send
                 val fullValue = appNameCharacteristic?.value ?: "EMPTY".toByteArray()
-                
-                // Chunk the response for the requested offset
                 val responseValue = if (offset < fullValue.size) {
                     fullValue.copyOfRange(offset, fullValue.size)
                 } else {
                     byteArrayOf()
                 }
-                
-                val sent = gattServer?.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, offset, responseValue) ?: false
-                Log.d("BLE_GATT", "Sent Read Response: $sent, size: ${responseValue.size}")
+                gattServer?.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, offset, responseValue)
             } else {
                 gattServer?.sendResponse(device, requestId, BluetoothGatt.GATT_FAILURE, offset, null)
             }
@@ -95,7 +90,6 @@ class BleAdvertiserManager(private val context: Context) {
             offset: Int,
             descriptor: BluetoothGattDescriptor?
         ) {
-            Log.d("BLE_GATT", "Descriptor Read request: ${descriptor?.uuid}")
             if (descriptor?.uuid == CCC_DESCRIPTOR_UUID) {
                 gattServer?.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, offset, byteArrayOf(0, 0))
             } else {
@@ -123,35 +117,42 @@ class BleAdvertiserManager(private val context: Context) {
         try {
             gattServer = bluetoothManager.openGattServer(context, gattServerCallback)
             val service = BluetoothGattService(SERVICE_UUID, BluetoothGattService.SERVICE_TYPE_PRIMARY)
-            
             appNameCharacteristic = BluetoothGattCharacteristic(
                 CHAR_UUID,
                 BluetoothGattCharacteristic.PROPERTY_READ or BluetoothGattCharacteristic.PROPERTY_NOTIFY,
                 BluetoothGattCharacteristic.PERMISSION_READ
             )
-            
-            // Add Client Characteristic Configuration Descriptor (required for Notify)
             val cccDescriptor = BluetoothGattDescriptor(
                 CCC_DESCRIPTOR_UUID,
                 BluetoothGattDescriptor.PERMISSION_READ or BluetoothGattDescriptor.PERMISSION_WRITE
             )
             appNameCharacteristic?.addDescriptor(cccDescriptor)
-            
             service.addCharacteristic(appNameCharacteristic)
             gattServer?.addService(service)
-            Log.d("BLE_GATT", "GATT Server setup complete with Custom Service and CCCD.")
         } catch (e: Exception) {
             Log.e("BLE_GATT", "Failed to setup GATT Server: ${e.message}")
         }
     }
 
     private fun createPayload(appName: String): ByteArray {
-        val upper = appName.uppercase()
-        val bytes = upper.toByteArray(Charsets.UTF_8)
-        val trimmed = if (bytes.size > 18) bytes.copyOf(18) else bytes
+        val nameToUse = if (appName.contains(".")) {
+            appName.substringAfterLast('.')
+        } else {
+            appName
+        }.replace(" ", "").uppercase()
+
+        val nameBytes = nameToUse.toByteArray(Charsets.UTF_8)
+        
+        // Limit for BLE safety (max 26 bytes including 0x0A)
+        val maxLength = 25 
+        val trimmed = if (nameBytes.size > maxLength) nameBytes.copyOf(maxLength) else nameBytes
+        
+        // Add 0x0A as the terminator
         val payload = ByteArray(trimmed.size + 1)
-        payload[0] = 0x76.toByte() 
-        System.arraycopy(trimmed, 0, payload, 1, trimmed.size)
+        System.arraycopy(trimmed, 0, payload, 0, trimmed.size)
+        payload[trimmed.size] = 0x0A.toByte()
+
+        Log.d("BLE_PAYLOAD", "Payload (Hex): " + payload.joinToString(" ") { "%02X".format(it) })
         return payload
     }
 
@@ -163,11 +164,8 @@ class BleAdvertiserManager(private val context: Context) {
         
         setupGattServer()
         val payload = createPayload(appName)
-        
-        // Always update the characteristic value
         appNameCharacteristic?.value = payload
         
-        // Notify connected devices
         for (device in connectedDevices) {
             try {
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
@@ -182,12 +180,12 @@ class BleAdvertiserManager(private val context: Context) {
         }
 
         if (appName == lastAppName && (currentAdvertisingSet != null || Build.VERSION.SDK_INT < Build.VERSION_CODES.O)) {
-            Log.d("BLE_AD", "App name same, skipping advertisement update.")
             return
         }
         
         lastAppName = appName
         
+        // Using 0x0076 (Apple ID) so scanners display <0076> as Company ID
         val data = AdvertiseData.Builder()
             .addManufacturerData(0x0076, payload)
             .setIncludeDeviceName(false)
