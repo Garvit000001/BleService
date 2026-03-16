@@ -135,23 +135,25 @@ class BleAdvertiserManager(private val context: Context) {
     }
 
     private fun createPayload(appName: String): ByteArray {
+        // Use the app name exactly as provided (keeps spaces), just convert to uppercase
         val nameToUse = if (appName.contains(".")) {
             appName.substringAfterLast('.')
         } else {
             appName
-        }.replace(" ", "").uppercase()
+        }.uppercase()
 
-        val nameBytes = nameToUse.toByteArray(Charsets.UTF_8)
+        var nameBytes = nameToUse.toByteArray(Charsets.UTF_8)
         
-        // Limit for BLE safety (max 26 bytes including 0x0A)
-        val maxLength = 25 
-        val trimmed = if (nameBytes.size > maxLength) nameBytes.copyOf(maxLength) else nameBytes
-        
-        // Add 0x0A as the terminator
-        val payload = ByteArray(trimmed.size + 1)
-        System.arraycopy(trimmed, 0, payload, 0, trimmed.size)
-        payload[trimmed.size] = 0x0A.toByte()
+        // Specifically remove trailing 0x0A (Line Feed) if it exists
+        // We use a while loop to ensure ALL trailing newlines are removed
+        while (nameBytes.isNotEmpty() && nameBytes.last() == 0x0A.toByte()) {
+            nameBytes = nameBytes.copyOfRange(0, nameBytes.size - 1)
+        }
 
+        // Limit for BLE safety (max 26 bytes)
+        val maxLength = 26 
+        val payload = if (nameBytes.size > maxLength) nameBytes.copyOf(maxLength) else nameBytes
+        
         Log.d("BLE_PAYLOAD", "Payload (Hex): " + payload.joinToString(" ") { "%02X".format(it) })
         return payload
     }

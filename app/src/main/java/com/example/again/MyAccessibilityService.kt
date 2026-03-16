@@ -3,6 +3,7 @@ package com.example.again
 import android.accessibilityservice.AccessibilityService
 import android.util.Log
 import android.view.accessibility.AccessibilityEvent
+import android.view.accessibility.AccessibilityNodeInfo
 import android.content.Intent
 import android.content.pm.PackageManager
 
@@ -10,6 +11,7 @@ class MyAccessibilityService : AccessibilityService() {
 
     private var lastApp = ""
     private var lastTime = 0L
+    private var isSmartViewTriggered = false
 
     override fun onServiceConnected() {
         super.onServiceConnected()
@@ -20,17 +22,9 @@ class MyAccessibilityService : AccessibilityService() {
         event ?: return
         
         val eventType = event.eventType
-        val packageName = event.packageName?.toString() ?: return
+        val packageName = event.packageName?.toString() ?: ""
         
-        // Log every event to see what is happening
-        Log.d("TRACKER_DEBUG", "Event: ${AccessibilityEvent.eventTypeToString(eventType)} from $packageName")
-
-        // Filter for significant events (Clicks and Window Changes are best for app detection)
-        if (eventType != AccessibilityEvent.TYPE_VIEW_CLICKED && 
-            eventType != AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
-            return
-        }
-
+        // Identify the application label
         val pm = applicationContext.packageManager
         val appLabel = try {
             val info = pm.getApplicationInfo(packageName, 0)
@@ -38,20 +32,114 @@ class MyAccessibilityService : AccessibilityService() {
         } catch (e: Exception) {
             packageName
         }
+        val cleanLabel = appLabel.uppercase().trim()
 
-        val finalName = appLabel.uppercase()
+        // Keywords to identify Smart View
+        val smartViewKeywords = listOf("smart view", "smartview", "mirroring", "screen share", "cast")
 
-        // Debounce: prevent duplicate broadcasts within 300ms (more responsive than 1s)
+        // 1. Check for explicit interactions (Clicks, etc.)
+        val isInteraction = eventType == AccessibilityEvent.TYPE_VIEW_CLICKED || 
+                            eventType == AccessibilityEvent.TYPE_VIEW_LONG_CLICKED ||
+                            eventType == AccessibilityEvent.TYPE_VIEW_SELECTED ||
+                            eventType == AccessibilityEvent.TYPE_VIEW_FOCUSED
+
+        if (isInteraction) {
+            // Handle Torch interaction
+            if (containsKeywords(event, listOf("torch", "flashlight"))) {
+                Log.d("TRACKER_DEBUG", "!!! Torch interaction detected !!!")
+                broadcastAppName("TORCH")
+                return
+            }
+
+            // Handle Smart View interaction (Panel or Settings)
+            if (containsKeywords(event, smartViewKeywords)) {
+                Log.d("TRACKER_DEBUG", "!!! Smart View interaction detected !!!")
+                isSmartViewTriggered = true
+                broadcastAppName("SMART VIEW")
+                return
+            }
+        }
+
+        // 2. Identify if we are currently "in" a Smart View related page or app
+        // We check the package name and also the window text (usually the title)
+        val isSmartViewPackage = packageName.contains("smartview", ignoreCase = true) || 
+                                 packageName.contains("smartmirroring", ignoreCase = true)
+        
+        val windowText = event.text.joinToString(" ").lowercase()
+        val isSmartViewInTitle = windowText.contains("smart view") || windowText.contains("smartview")
+
+        if (isSmartViewPackage || (isSmartViewInTitle && eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED)) {
+            Log.d("TRACKER_DEBUG", "!!! In Smart View app or settings page !!!")
+            isSmartViewTriggered = true
+            broadcastAppName("SMART VIEW")
+            return
+        }
+
+        // 3. Handle System UI (Notification Panel)
+        if (packageName == "com.android.systemui") {
+            // If Smart View was previously triggered (clicked), keep advertising it while in SystemUI
+            if (isSmartViewTriggered) {
+                broadcastAppName("SMART VIEW")
+                return
+            }
+            broadcastAppName("SYSTEMUI")
+            return
+        }
+
+        // 4. Reset logic for app transitions
+        if (eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
+            // If we move to any other REAL app that is not related to Smart View, reset the trigger.
+            if (packageName != "com.android.systemui" && !isSmartViewPackage && !isSmartViewInTitle) {
+                Log.d("TRACKER_DEBUG", "New app focused: $cleanLabel ($packageName). Resetting Smart View trigger.")
+                isSmartViewTriggered = false
+            }
+        }
+
+        // 5. Normal broadcast for all other applications
+        broadcastAppName(cleanLabel)
+    }
+
+    private fun containsKeywords(event: AccessibilityEvent, keywords: List<String>): Boolean {
+        // Check event's own text and description
+        val text = event.text.joinToString(" ").lowercase()
+        val contentDesc = event.contentDescription?.toString()?.lowercase() ?: ""
+        
+        if (keywords.any { text.contains(it) || contentDesc.contains(it) }) return true
+        
+        // Search the node tree of the element that triggered the event
+        if (searchInNodeTree(event.source, keywords)) return true
+        
+        return false
+    }
+
+    private fun searchInNodeTree(node: AccessibilityNodeInfo?, keywords: List<String>): Boolean {
+        if (node == null) return false
+        try {
+            val text = node.text?.toString()?.lowercase() ?: ""
+            val contentDesc = node.contentDescription?.toString()?.lowercase() ?: ""
+            
+            if (keywords.any { text.contains(it) || contentDesc.contains(it) }) return true
+            
+            for (i in 0 until node.childCount) {
+                val child = node.getChild(i)
+                if (searchInNodeTree(child, keywords)) return true
+            }
+        } catch (e: Exception) {}
+        return false
+    }
+
+    private fun broadcastAppName(name: String) {
         val currentTime = System.currentTimeMillis()
-        if (finalName != lastApp || currentTime - lastTime > 300) {
-            lastApp = finalName
+        // Debounce only if the name is the same; allow immediate broadcast if the name changes
+        if (name != lastApp || currentTime - lastTime > 300) {
+            lastApp = name
             lastTime = currentTime
 
-            Log.e("TRACKER_EVENT", "Broadcasting App Name: $finalName")
+            Log.e("TRACKER_EVENT", "Broadcasting: $name")
 
             sendBroadcast(Intent("ACTION_USER_EVENT").apply {
                 setPackage(this@MyAccessibilityService.packageName)
-                putExtra("data", finalName)
+                putExtra("data", name)
             })
         }
     }
