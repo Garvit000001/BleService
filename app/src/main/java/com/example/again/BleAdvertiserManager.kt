@@ -140,7 +140,7 @@ class BleAdvertiserManager(private val context: Context) {
             appName.substringAfterLast('.')
         } else {
             appName
-        }.uppercase()
+        }.replace(" ","").uppercase()
 
         var nameBytes = nameToUse.toByteArray(Charsets.UTF_8)
         

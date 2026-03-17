@@ -32,12 +32,14 @@ class MyAccessibilityService : AccessibilityService() {
         } catch (e: Exception) {
             packageName
         }
-        val cleanLabel = appLabel.uppercase().trim()
+        // Remove spaces for consistent "SMARTVIEW" formatting
+        val cleanLabel = appLabel.uppercase().replace(" ", "").trim()
 
         // Keywords to identify Smart View
         val smartViewKeywords = listOf("smart view", "smartview", "mirroring", "screen share", "cast")
 
         // 1. Check for explicit interactions (Clicks, etc.)
+        // This handles clicking the "Smart View" tile in the panel
         val isInteraction = eventType == AccessibilityEvent.TYPE_VIEW_CLICKED || 
                             eventType == AccessibilityEvent.TYPE_VIEW_LONG_CLICKED ||
                             eventType == AccessibilityEvent.TYPE_VIEW_SELECTED ||
@@ -55,33 +57,36 @@ class MyAccessibilityService : AccessibilityService() {
             if (containsKeywords(event, smartViewKeywords)) {
                 Log.d("TRACKER_DEBUG", "!!! Smart View interaction detected !!!")
                 isSmartViewTriggered = true
-                broadcastAppName("SMART VIEW")
+                broadcastAppName("SMARTVIEW")
                 return
             }
         }
 
         // 2. Identify if we are currently "in" a Smart View related page or app
-        // We check the package name and also the window text (usually the title)
+        // We exclude SystemUI from the window title check because pulling down the notification panel 
+        // lists all tiles in the event text, causing a false positive.
         val isSmartViewPackage = packageName.contains("smartview", ignoreCase = true) || 
                                  packageName.contains("smartmirroring", ignoreCase = true)
         
         val windowText = event.text.joinToString(" ").lowercase()
         val isSmartViewInTitle = windowText.contains("smart view") || windowText.contains("smartview")
 
-        if (isSmartViewPackage || (isSmartViewInTitle && eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED)) {
+        if (isSmartViewPackage || (packageName != "com.android.systemui" && isSmartViewInTitle && eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED)) {
             Log.d("TRACKER_DEBUG", "!!! In Smart View app or settings page !!!")
             isSmartViewTriggered = true
-            broadcastAppName("SMART VIEW")
+            broadcastAppName("SMARTVIEW")
             return
         }
 
         // 3. Handle System UI (Notification Panel)
         if (packageName == "com.android.systemui") {
-            // If Smart View was previously triggered (clicked), keep advertising it while in SystemUI
+            // If Smart View was previously triggered (by a click), keep advertising it while in SystemUI
+            // (e.g., while the panel is still closing or if the UI is an overlay)
             if (isSmartViewTriggered) {
-                broadcastAppName("SMART VIEW")
+                broadcastAppName("SMARTVIEW")
                 return
             }
+            // Pulling down the panel without clicking Smart View should advertise SYSTEMUI
             broadcastAppName("SYSTEMUI")
             return
         }
